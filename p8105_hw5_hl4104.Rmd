@@ -1,0 +1,327 @@
+---
+title: "P8105 Homework 5"
+author: "Houson Lin (hl4104)"
+date: "2026-11-18"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(broom)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal(base_size = 12))
+set.seed(8105)
+```
+
+
+# Problem 1
+
+Function written in class
+
+```{r birthday-function}
+source("Source/birthday_repeated.R")
+
+birthday_repeated(23)
+```
+
+Simulation
+
+```{r birthday-simulation}
+birthday_results = expand_grid(
+  sample_size = 2:50,
+  iteration = 1:10000
+) |>
+  mutate(
+    repeated = map_lgl(sample_size, birthday_repeated)
+  ) |>
+  group_by(sample_size) |>
+  summarize(
+    probability = mean(repeated),
+    .groups = "drop"
+  )
+
+birthday_results
+```
+
+```{r birthday-plot, fig.cap="Estimated probability of at least one shared birthday by group size."}
+birthday_results |>
+  ggplot(aes(x = sample_size, y = probability)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point(color = "blue", size = 1.5) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "gray") +
+  scale_x_continuous(breaks = seq(5, 50, by = 5)) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.2),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    title = "Shared birthdays become likely in relatively small groups",
+    x = "Group size",
+    y = "Estimated probability of a shared birthday"
+  )
+```
+
+The probability increases nonlinearly as group size increases. It is already approximately `r scales::percent(birthday_results |> filter(sample_size == 23) |> pull(probability), accuracy = 0.1)` for 23 people and exceeds 50% around this group size. The increase is faster than intuition may suggest because every pair of people creates another opportunity for a match; the number of distinct pairs is \(n(n-1)/2\), rather than merely \(n\).
+
+# Problem 2
+
+list.files
+
+```{r study-file-import}
+study_files = tibble(
+  file_name = list.files(
+    path = "data",
+    pattern = "^(con|exp)_\\d{2}\\.csv$",
+    full.names = TRUE
+  )
+) |>
+  mutate(
+    observations = map(
+      file_name,
+      \(path) read_csv(path)
+    )
+  )
+
+study_files
+```
+
+extract names, select, pivot_longer
+
+```{r study-data-tidy}
+study_tidy = study_files |>
+  mutate(
+    file_id = str_remove(basename(file_name), "\\.csv$"),
+    arm_code = str_extract(file_id, "^[a-z]+"),
+    subject_number = str_extract(file_id, "\\d+$"),
+    arm = recode(
+      arm_code,
+      con = "Control",
+      exp = "Experimental"
+    ),
+    subject_id = str_c(arm_code, subject_number, sep = "_")
+  ) |>
+  select(subject_id, arm, observations) |>
+  unnest(observations) |>
+  pivot_longer(
+    cols = starts_with("week_"),
+    names_to = "week",
+    names_prefix = "week_",
+    values_to = "observation",
+    names_transform = list(week = as.integer)
+  ) |>
+  arrange(arm, subject_id, week)
+
+study_tidy
+```
+
+The checks below verify that there are 20 participants, eight weekly observations per participant, and no missing outcome values.
+
+```{r study-data-checks}
+study_tidy |>
+  summarize(
+    participants = n_distinct(subject_id),
+    weeks = n_distinct(week),
+    rows = n(),
+    missing_observations = sum(is.na(observation))
+  )
+```
+
+```{r spaghetti-plot, fig.cap="Individual outcome trajectories over eight weeks, separated by study arm."}
+study_tidy |>
+  ggplot(
+    aes(
+      x = week,
+      y = observation,
+      group = subject_id,
+      color = arm
+    )
+  ) +
+  geom_line(alpha = 0.75, linewidth = 0.8) +
+  geom_point(alpha = 0.8, size = 1.6) +
+  facet_grid(. ~ arm) +
+  scale_x_continuous(breaks = 1:8) +
+  scale_color_manual(
+    values = c("Control" = "blue", "Experimental" = "red")
+  ) +
+  labs(
+    title = "Participant trajectories differ by study arm",
+    x = "Study week",
+    y = "Observation",
+    color = "Study arm"
+  ) +
+  theme(legend.position = "none")
+```
+
+mean observation in each arm and week
+
+```{r study-weekly-summary}
+weekly_summary <- study_tidy |>
+  group_by(arm, week) |>
+  summarize(
+    mean_observation = mean(observation),
+    sd_observation = sd(observation),
+    .groups = "drop"
+  )
+
+weekly_summary
+```
+
+The control trajectories fluctuate around a relatively stable level, with a modest decline by the final weeks. In contrast, most participants in the experimental arm show increasing outcomes over time. The two groups are fairly similar near the beginning, but their trajectories separate as follow-up continues; by week 8, the experimental group mean is `r round(weekly_summary |> filter(arm == "Experimental", week == 8) |> pull(mean_observation), 2)`, compared with `r round(weekly_summary |> filter(arm == "Control", week == 8) |> pull(mean_observation), 2)` in the control group. This descriptive plot suggests a positive experimental-arm effect that grows over time, although a formal longitudinal analysis would be needed for statistical inference.
+
+# Problem 3
+
+
+
+```{r t-test-function}
+source("Source/simulate_t_test.R")
+
+simulate_t_test(mu = 0)
+```
+
+5000 datasets under the null value
+
+```{r null-simulations}
+null_results <- map_dfr(
+  1:5000,
+  \(simulation) simulate_t_test(mu = 0),
+  .id = "simulation"
+)
+
+null_results
+```
+
+Type I error rate under alpha = 0.05
+
+```{r null-rejection-rate}
+null_results |>
+  summarize(
+    rejection_proportion = mean(p.value < 0.05)
+  )
+```
+
+The estimated rejection proportion is `r scales::percent(mean(null_results$p.value < 0.05), accuracy = 0.1)`, which is close to the nominal 5% Type I error rate.
+
+Now repeat the 5,000-dataset simulation for each integer value of \(\mu\) from 0 through 6.
+
+```{r all-effect-simulations}
+simulation_results = tibble(mu = 0:6) |>
+  mutate(
+    results = map(
+      mu,
+      \(true_mu) map_dfr(
+        1:5000,
+        \(simulation) simulate_t_test(mu = true_mu)
+      )
+    )
+  ) |>
+  unnest(results) |>
+  mutate(rejected = p.value < 0.05)
+
+simulation_results
+```
+
+The power at each true mean is the proportion of simulations in which the null hypothesis is rejected.
+
+```{r power-summary}
+power_results = simulation_results |>
+  group_by(mu) |>
+  summarize(
+    power = mean(rejected),
+    .groups = "drop"
+  )
+
+power_results
+```
+
+```{r power-plot, fig.cap="Estimated power of the two-sided one-sample t-test across true mean values."}
+power_results |>
+  ggplot(aes(x = mu, y = power)) +
+  geom_line(color = "green", linewidth = 1) +
+  geom_point(color = "green", size = 2.5) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.2),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    title = "Power increases with effect size",
+    x = expression("True mean " * mu),
+    y = "Estimated power"
+  )
+```
+
+Power increases as the true mean moves farther from the null value of zero. With \(n\) and \(\sigma\) fixed, a larger effect is easier to distinguish from sampling variation. At \(\mu=0\), the rejection proportion is approximately the 5% Type I error rate; by the largest effect sizes considered, power approaches 100%.
+
+Compare the average estimate across all simulations with the average estimate restricted to simulations in which the null was rejected.
+
+```{r estimate-summary}
+estimate_results = simulation_results |>
+  group_by(mu) |>
+  summarize(
+    mean_estimate_all = mean(estimate),
+    mean_estimate_rejected = mean(estimate[rejected]),
+    .groups = "drop"
+  ) |>
+  pivot_longer(
+    cols = starts_with("mean_estimate"),
+    names_to = "sample_set",
+    values_to = "mean_estimate"
+  ) |>
+  mutate(
+    sample_set = recode(
+      sample_set,
+      mean_estimate_all = "All samples",
+      mean_estimate_rejected = "Rejected samples only"
+    )
+  )
+
+estimate_results
+```
+
+```{r estimate-plot, fig.cap="Average estimated mean using all simulations and using only simulations with a rejected null hypothesis."}
+estimate_results |>
+  ggplot(
+    aes(
+      x = mu,
+      y = mean_estimate,
+      color = sample_set,
+      shape = sample_set
+    )
+  ) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    color = "gray"
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_color_manual(
+    values = c(
+      "All samples" = "blue",
+      "Rejected samples only" = "red"
+    )
+  ) +
+  labs(
+    title = "Significance filtering biases estimates when power is low",
+    x = expression("True mean " * mu),
+    y = expression("Average estimate of " * mu),
+    color = NULL,
+    shape = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+Across all simulations, the average estimate is approximately equal to the true \(\mu\), reflecting that the sample mean is an unbiased estimator. Among rejected tests only, however, estimates tend to be farther from zero than the true value when power is low or moderate. Rejection selects samples whose estimates are large enough relative to their standard errors to cross the significance threshold, so unusually large estimates are overrepresented. This is a form of selection bias, sometimes called the winner's curse. As the true effect and power increase, nearly every sample is rejected, so the conditional average approaches the unconditional average and the true value. At \(\mu=0\), significant positive and negative estimates are selected symmetrically, so their signed average remains near zero even though their absolute magnitudes are unusually large.
